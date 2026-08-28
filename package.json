@@ -1,0 +1,27 @@
+{
+  "name": "pi-monitor",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Monitor tool for pi: stream background command, poll and WebSocket output into the live session.",
+  "keywords": ["pi-package", "pi-extension"],
+  "license": "ISC",
+  "author": "Colm Cahalane <colmcahalane@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/cahalane/pi-monitor.git"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types tests/*.test.ts"
+  },
+  "dependencies": {
+    "undici": "^8.10.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
