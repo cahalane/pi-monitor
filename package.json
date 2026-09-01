@@ -1,5 +1,5 @@
 {
-  "name": "pi-monitor",
+  "name": "@cahalane/pi-monitor",
   "version": "0.1.0",
   "type": "module",
   "description": "Monitor tool for pi: stream background command, poll and WebSocket output into the live session.",
@@ -10,6 +10,26 @@
     "type": "git",
     "url": "git+ssh://git@github.com/cahalane/pi-monitor.git"
   },
+  "bugs": {
+    "url": "https://github.com/cahalane/pi-monitor/issues"
+  },
+  "homepage": "https://github.com/cahalane/pi-monitor#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "format.ts",
+    "pipeline.ts",
+    "registry.ts",
+    "sources.ts",
+    "types.ts",
+    "ws-guard.ts",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "pi": {
     "extensions": ["./index.ts"]
   },
