@@ -312,7 +312,10 @@ export class MonitorRegistry {
 					toSeq,
 				},
 			},
-			{ deliverAs: runtime.config.deliverAs, triggerTurn: wake === "wake" },
+			{
+				deliverAs: !runtime.config.wake ? "nextTurn" : runtime.config.deliverAs,
+				triggerTurn: wake === "wake",
+			},
 		);
 
 		runtime.outstanding = true;
@@ -449,10 +452,12 @@ export class MonitorRegistry {
 						events: runtime.events,
 					},
 				},
-				// The terminal notice shares the monitor's delivery mode. Mixing modes puts them on
-				// different queues, and an idle session then shows "ended" before the last event it
-				// is summarising.
-				{ deliverAs: runtime.config.deliverAs, triggerTurn: wake },
+				// Keep terminal notices with their event queue. Non-waking monitors use nextTurn so
+				// an asynchronous notice cannot be appended inside an in-flight tool turn.
+				{
+					deliverAs: !runtime.config.wake ? "nextTurn" : runtime.config.deliverAs,
+					triggerTurn: wake,
+				},
 			);
 			runtime.outstanding = true;
 		}

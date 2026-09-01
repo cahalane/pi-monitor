@@ -279,6 +279,27 @@ test("`until` ends the watch after delivering the matching line", async () => {
 	assert.equal(h.sources.get("mon_1").stopCalls, 1);
 });
 
+test("wake:false terminal delivery stays valid across the ending turn and the next user turn", async () => {
+	const h = makeHarness();
+	await h.registry.start(config({ batchMs: 0, until: /DONE/, wake: false }));
+	const source = h.sources.get("mon_1");
+
+	// The monitor ends asynchronously while an assistant/tool turn may still be in flight.
+	source.callbacks.onLine("DONE");
+	h.clock.advance(0);
+	await flushMicrotasks();
+
+	const ended = eventsOf(h, "monitor-ended");
+	assert.equal(ended.length, 1, "terminal event is preserved");
+	assert.equal(ended[0]?.triggerTurn, false);
+	assert.equal(ended[0]?.deliverAs, "nextTurn", "defer non-waking events until a user turn");
+
+	// Model the assistant completing and a later user prompt consuming the queued context.
+	h.registry.onTurnBoundary();
+	h.registry.onUserTurn();
+	assert.equal(eventsOf(h, "monitor-ended").length, 1, "the event is not dropped or duplicated");
+});
+
 test("a source-reported end sends exactly one monitor-ended, and stopping an ended monitor sends no more", async () => {
 	const h = makeHarness();
 	await h.registry.start(config());
