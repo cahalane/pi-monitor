@@ -7,7 +7,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { createRequire } from "node:module";
-import { clampLine, splitLines } from "./pipeline.ts";
+import { clampLine, splitLines, stripAnsi } from "./pipeline.ts";
 import { DEFAULTS, type EndReason, type MonitorConfig } from "./types.ts";
 import { assertPublicHost, isBlockedAddress } from "./ws-guard.ts";
 
@@ -49,23 +49,26 @@ async function terminate(child: ChildProcess, graceMs: number, deadlineMs: numbe
 		}
 	};
 
-	const closed = new Promise<void>((resolve) => {
+	const exited = new Promise<void>((resolve) => {
 		if (child.exitCode !== null || child.signalCode !== null) {
 			resolve();
 			return;
 		}
-		child.once("close", () => resolve());
+		// `close` can wait on inherited stdio held by a descendant. The process-group signal above
+		// already targets those descendants, so the shell's exit is enough to complete stop().
+		child.once("exit", () => resolve());
 	});
 
 	signalTarget("SIGTERM");
 	const escalation = setTimeout(() => signalTarget("SIGKILL"), graceMs);
 	escalation.unref();
+	let deadlineHandle!: NodeJS.Timeout;
 	const deadline = new Promise<void>((resolve) => {
-		const handle = setTimeout(resolve, deadlineMs);
-		handle.unref();
+		deadlineHandle = setTimeout(resolve, deadlineMs);
 	});
-	await Promise.race([closed, deadline]);
+	await Promise.race([exited, deadline]);
 	clearTimeout(escalation);
+	clearTimeout(deadlineHandle);
 }
 
 export class CommandSource implements Source {
@@ -175,7 +178,16 @@ export class PollSource implements Source {
 		this.running = undefined;
 		if (this.stopped) return;
 
-		const canonical = output.replace(/\r\n?/g, "\n").trim();
+		// Hash the rendered text, not terminal decoration: colour-only churn is not a change.
+		const canonical = output
+			.replace(/\r\n?/g, "\n")
+			.split("\n")
+			.map((raw) => ({ raw, stripped: stripAnsi(raw) }))
+			// Drop decoration-only records but preserve meaningful interior blank lines.
+			.filter((line) => line.stripped.trim().length > 0 || line.raw.trim().length === 0)
+			.map((line) => line.stripped)
+			.join("\n")
+			.trim();
 		const hash = createHash("sha1").update(canonical).digest("hex");
 		if (hash === this.lastHash) return;
 		const first = this.lastHash === undefined;
@@ -206,10 +218,16 @@ type WebSocketCtor = new (
 	options?: { protocols?: string[]; dispatcher?: unknown },
 ) => WebSocket;
 
-interface PinnedTransport {
+export interface PinnedTransport {
 	WebSocketImpl: WebSocketCtor;
 	dispatcher?: unknown;
 	close(): Promise<void>;
+}
+
+export interface WebSocketSourceOptions {
+	/** Test-only seams; production construction uses the public-host guard and pinned transport. */
+	assertPublicHost?: (hostname: string) => Promise<void>;
+	createTransport?: (hostname: string) => Promise<PinnedTransport>;
 }
 
 /**
@@ -265,18 +283,20 @@ export class WebSocketSource implements Source {
 
 	private readonly config: MonitorConfig;
 	private readonly callbacks: SourceCallbacks;
+	private readonly options: WebSocketSourceOptions;
 
-	constructor(config: MonitorConfig, callbacks: SourceCallbacks) {
+	constructor(config: MonitorConfig, callbacks: SourceCallbacks, options: WebSocketSourceOptions = {}) {
 		this.config = config;
 		this.callbacks = callbacks;
+		this.options = options;
 	}
 
 	async start(): Promise<void> {
 		const target = this.config.ws;
 		if (!target) throw new Error("WebSocket monitor started without a target");
 		const hostname = new URL(target.url).hostname.replace(/^\[|]$/g, "");
-		await assertPublicHost(hostname);
-		const transport = await createPinnedTransport(hostname);
+		await (this.options.assertPublicHost ?? assertPublicHost)(hostname);
+		const transport = await (this.options.createTransport ?? createPinnedTransport)(hostname);
 		this.transport = transport;
 		if (this.stopped) {
 			await transport.close();
@@ -299,6 +319,11 @@ export class WebSocketSource implements Source {
 						kind: "error",
 						message: `message of ${bytes} bytes exceeds the 1 MiB limit; subscribe to a filtered feed`,
 					});
+					try {
+						socket.close(1009, "message too big");
+					} catch {
+						// Socket may already be closing.
+					}
 					return;
 				}
 				for (const line of data.split(/\r\n?|\n/)) this.callbacks.onLine(line);
@@ -315,6 +340,11 @@ export class WebSocketSource implements Source {
 					kind: "error",
 					message: `binary message of ${size} bytes exceeds the 1 MiB limit`,
 				});
+				try {
+					socket.close(1009, "message too big");
+				} catch {
+					// Socket may already be closing.
+				}
 				return;
 			}
 			this.callbacks.onLine(`[binary frame, ${size} bytes]`);

@@ -18,6 +18,40 @@ export interface LineFilterOptions {
 
 export const DEFAULT_MAX_LINE_CHARS = 2000;
 
+/** Removes terminal control sequences while retaining ordinary text (including tabs). */
+export function stripAnsi(text: string): string {
+	let out = "";
+	for (let i = 0; i < text.length; i += 1) {
+		const code = text.charCodeAt(i);
+		if (code === 0x1b) {
+			const next = text[i + 1];
+			if (next === "[") {
+				// CSI ends at its first final byte (0x40-0x7e), including malformed CSI.
+				i += 2;
+				while (i < text.length && (text.charCodeAt(i) < 0x40 || text.charCodeAt(i) > 0x7e)) i += 1;
+				continue;
+			}
+			if (next === "]") {
+				// OSC is terminated by BEL or by the two-byte ST sequence ESC\\.
+				i += 2;
+				while (i < text.length && text[i] !== "\u0007" && !(text[i] === "\u001b" && text[i + 1] === "\\")) i += 1;
+				if (text[i] === "\u001b") i += 1;
+				continue;
+			}
+			// Ordinary two-byte ESC sequences and a lone ESC have no useful text.
+			if (next !== undefined) i += 1;
+			continue;
+		}
+		// C0 controls are not useful in an injected line. Keep horizontal tab for readable tables.
+		if (code < 0x20 || code === 0x7f) {
+			if (code === 0x09) out += text[i];
+			continue;
+		}
+		out += text[i];
+	}
+	return out;
+}
+
 /** Splits a chunk into complete lines, returning the trailing partial line as `carry`. */
 export function splitLines(carry: string, chunk: string): { lines: string[]; carry: string } {
 	const combined = carry + chunk.replace(/\r\n?/g, "\n");
@@ -42,15 +76,34 @@ export class LineFilter {
 		this.options = options;
 	}
 
-	/** Returns the line to emit, or undefined when it is filtered out. */
+	private lastNormalized: string | undefined;
+
+	/** Returns the displayed line to emit, or undefined when it is filtered out. */
 	accept(raw: string): string | undefined {
-		const line = raw.replace(/\s+$/, "");
-		if (line.length === 0) return undefined;
-		if (this.options.match && !this.options.match.test(line)) return undefined;
-		if (this.options.ignore?.test(line)) return undefined;
+		const max = this.options.maxLineChars ?? DEFAULT_MAX_LINE_CHARS;
+		const stripped = stripAnsi(raw).replace(/\s+$/, "");
+		// Regexes see only the bounded tail; the display retains an honest marker based on the
+		// complete ANSI-free line.
+		const line = stripped.length > max ? stripped.slice(-max) : stripped;
+		this.lastNormalized = undefined;
+		if (line.trim().length === 0) return undefined;
+		const test = (pattern: RegExp): boolean => {
+			pattern.lastIndex = 0;
+			return pattern.test(line);
+		};
+		if (this.options.match && !test(this.options.match)) return undefined;
+		if (this.options.ignore && test(this.options.ignore)) return undefined;
 		if (this.options.dedupe && line === this.previous) return undefined;
 		this.previous = line;
-		return clampLine(line, this.options.maxLineChars ?? DEFAULT_MAX_LINE_CHARS);
+		this.lastNormalized = line;
+		return clampLine(stripped, max);
+	}
+
+	/** Tests a stop pattern against the same bounded, ANSI-free text used by filters. */
+	test(pattern: RegExp): boolean {
+		if (this.lastNormalized === undefined) return false;
+		pattern.lastIndex = 0;
+		return pattern.test(this.lastNormalized);
 	}
 }
 
@@ -114,6 +167,18 @@ export function truncateToBytes(text: string, maxBytes: number): string {
 /** Compiles a user-supplied pattern, with a clear error instead of a raw SyntaxError. */
 export function compilePattern(pattern: string | undefined, field: string): RegExp | undefined {
 	if (pattern === undefined || pattern === "") return undefined;
+	// Deliberately heuristic: catch the common catastrophic backtracking shapes without
+	// rejecting useful expressions. This is a guard, not a complete regex analyser.
+	const quantifier = "(?:[+*]|\\{\\d+(?:,\\d*)?\\})";
+	const nested = new RegExp(`\\([^()]*${quantifier}[^()]*\\)${quantifier}`).test(pattern);
+	const overlapping = [...pattern.matchAll(/\(([^()]+)\)([+*]|\{\d+(?:,\d*)?\})/g)].some((match) => {
+		const alternatives = (match[1] ?? "").split("|").filter((part) => part.length > 0);
+		return alternatives.some((left) => alternatives.some((right) => left !== right &&
+			(left.startsWith(right) || right.startsWith(left))));
+	});
+	if (nested || overlapping) {
+		throw new Error(`${field} pattern may cause catastrophic backtracking; simplify or bound it: /${pattern}/`);
+	}
 	try {
 		return new RegExp(pattern);
 	} catch (error) {
