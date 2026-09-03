@@ -20,30 +20,52 @@ export const DEFAULT_MAX_LINE_CHARS = 2000;
 
 /** Removes terminal control sequences while retaining ordinary text (including tabs). */
 export function stripAnsi(text: string): string {
+	const isStringControl = (code: number): boolean =>
+		code === 0x50 || code === 0x58 || code === 0x5d || code === 0x5e || code === 0x5f;
+	const skipCsi = (start: number): number => {
+		let end = start;
+		while (end < text.length && (text.charCodeAt(end) < 0x40 || text.charCodeAt(end) > 0x7e)) end += 1;
+		return end;
+	};
+	const skipString = (start: number, allowBel: boolean): number => {
+		let end = start;
+		while (
+			end < text.length &&
+			text.charCodeAt(end) !== 0x9c &&
+			!(allowBel && text.charCodeAt(end) === 0x07) &&
+			!(text.charCodeAt(end) === 0x1b && text[end + 1] === "\\")
+		) end += 1;
+		if (text.charCodeAt(end) === 0x1b) end += 1;
+		return end;
+	};
+
 	let out = "";
 	for (let i = 0; i < text.length; i += 1) {
 		const code = text.charCodeAt(i);
 		if (code === 0x1b) {
-			const next = text[i + 1];
-			if (next === "[") {
-				// CSI ends at its first final byte (0x40-0x7e), including malformed CSI.
-				i += 2;
-				while (i < text.length && (text.charCodeAt(i) < 0x40 || text.charCodeAt(i) > 0x7e)) i += 1;
+			const next = text.charCodeAt(i + 1);
+			if (next === 0x5b) {
+				i = skipCsi(i + 2);
 				continue;
 			}
-			if (next === "]") {
-				// OSC is terminated by BEL or by the two-byte ST sequence ESC\\.
-				i += 2;
-				while (i < text.length && text[i] !== "\u0007" && !(text[i] === "\u001b" && text[i + 1] === "\\")) i += 1;
-				if (text[i] === "\u001b") i += 1;
+			if (isStringControl(next)) {
+				i = skipString(i + 2, next === 0x5d);
 				continue;
 			}
 			// Ordinary two-byte ESC sequences and a lone ESC have no useful text.
-			if (next !== undefined) i += 1;
+			if (!Number.isNaN(next)) i += 1;
 			continue;
 		}
-		// C0 controls are not useful in an injected line. Keep horizontal tab for readable tables.
-		if (code < 0x20 || code === 0x7f) {
+		if (code === 0x9b) {
+			i = skipCsi(i + 1);
+			continue;
+		}
+		if (code === 0x90 || code === 0x98 || code === 0x9d || code === 0x9e || code === 0x9f) {
+			i = skipString(i + 1, code === 0x9d);
+			continue;
+		}
+		// C0/C1 controls are not useful in an injected line. Keep horizontal tab for readable tables.
+		if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
 			if (code === 0x09) out += text[i];
 			continue;
 		}
@@ -60,11 +82,16 @@ export function splitLines(carry: string, chunk: string): { lines: string[]; car
 	return { lines: parts, carry: nextCarry };
 }
 
+function boundedTail(line: string, maxChars: number): { text: string; elided: number } {
+	const characters = Array.from(line);
+	if (characters.length <= maxChars) return { text: line, elided: 0 };
+	return { text: characters.slice(-maxChars).join(""), elided: characters.length - maxChars };
+}
+
 /** Truncates the head of an over-long line, keeping the tail where fresh output lives. */
 export function clampLine(line: string, maxChars = DEFAULT_MAX_LINE_CHARS): string {
-	if (line.length <= maxChars) return line;
-	const kept = line.slice(line.length - maxChars);
-	return `[${line.length - maxChars} chars elided] ${kept}`;
+	const bounded = boundedTail(line, maxChars);
+	return bounded.elided === 0 ? bounded.text : `[${bounded.elided} chars elided] ${bounded.text}`;
 }
 
 /** Stateful because dedupe needs to remember the previous accepted line. */
@@ -84,7 +111,7 @@ export class LineFilter {
 		const stripped = stripAnsi(raw).replace(/\s+$/, "");
 		// Regexes see only the bounded tail; the display retains an honest marker based on the
 		// complete ANSI-free line.
-		const line = stripped.length > max ? stripped.slice(-max) : stripped;
+		const line = boundedTail(stripped, max).text;
 		this.lastNormalized = undefined;
 		if (line.trim().length === 0) return undefined;
 		const test = (pattern: RegExp): boolean => {
@@ -169,9 +196,9 @@ export function compilePattern(pattern: string | undefined, field: string): RegE
 	if (pattern === undefined || pattern === "") return undefined;
 	// Deliberately heuristic: catch the common catastrophic backtracking shapes without
 	// rejecting useful expressions. This is a guard, not a complete regex analyser.
-	const quantifier = "(?:[+*]|\\{\\d+(?:,\\d*)?\\})";
-	const nested = new RegExp(`\\([^()]*${quantifier}[^()]*\\)${quantifier}`).test(pattern);
-	const overlapping = [...pattern.matchAll(/\(([^()]+)\)([+*]|\{\d+(?:,\d*)?\})/g)].some((match) => {
+	const unboundedQuantifier = "(?:[+*]|\\{\\d+,\\})";
+	const nested = new RegExp(`\\([^()]*${unboundedQuantifier}[^()]*\\)${unboundedQuantifier}`).test(pattern);
+	const overlapping = [...pattern.matchAll(/\(([^()]+)\)([+*]|\{\d+,\})/g)].some((match) => {
 		const alternatives = (match[1] ?? "").split("|").filter((part) => part.length > 0);
 		return alternatives.some((left) => alternatives.some((right) => left !== right &&
 			(left.startsWith(right) || right.startsWith(left))));

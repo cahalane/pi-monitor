@@ -52,10 +52,21 @@ async function serverFor(message: string): Promise<{ server: Server; url: string
 	return { server, url: `ws://127.0.0.1:${address.port}` };
 }
 
-const transport = async (): Promise<PinnedTransport> => ({
-	WebSocketImpl: WebSocket as unknown as PinnedTransport["WebSocketImpl"],
-	close: async () => {},
-});
+const transport = async (
+	_hostname: string,
+	onClose?: (code: number | undefined) => void,
+): Promise<PinnedTransport> => {
+	class ObservedWebSocket extends WebSocket {
+		override close(code?: number, reason?: string): void {
+			onClose?.(code);
+			super.close(code, reason);
+		}
+	}
+	return {
+		WebSocketImpl: ObservedWebSocket as unknown as PinnedTransport["WebSocketImpl"],
+		close: async () => {},
+	};
+};
 
 const waitFor = async (predicate: () => boolean): Promise<void> => {
 	const deadline = Date.now() + 10_000;
@@ -104,6 +115,7 @@ test("WebSocketSource delivers local text frames through a test-only injected tr
 test("WebSocketSource reports and closes an oversized local message", async () => {
 	const live = await serverFor("x".repeat(1024 * 1024 + 1));
 	let message = "";
+	let closeCode: number | undefined;
 	const source = new WebSocketSource(
 		wsConfig(live.url),
 		{
@@ -112,12 +124,16 @@ test("WebSocketSource reports and closes an oversized local message", async () =
 				message = reason.kind === "error" ? reason.message : reason.kind;
 			},
 		},
-		{ assertPublicHost: async () => {}, createTransport: transport },
+		{
+			assertPublicHost: async () => {},
+			createTransport: (hostname) => transport(hostname, (code) => { closeCode = code; }),
+		},
 	);
 	try {
 		await source.start();
-		await waitFor(() => message !== "");
+		await waitFor(() => message !== "" && closeCode !== undefined);
 		assert.match(message, /exceeds the 1 MiB limit/);
+		assert.equal(closeCode, 1009);
 	} finally {
 		await source.stop();
 		await closeServer(live.server);

@@ -168,9 +168,9 @@ The review found seven must-fixes. All accepted; this section overrides the text
    from `session_start` and is dropped on `session_shutdown`; every timer and source callback checks
    a generation counter, so a stale runtime cannot talk to a replaced session.
 4. **Shutdown awaits termination.** Stop clears timers, detaches listeners, `SIGTERM`s the process
-   group, escalates to `SIGKILL` after 3 s, and awaits `close` with a 5 s deadline. No model-facing
-   notices are sent during shutdown. Windows gets plain `child.kill()` and is documented as
-   best-effort.
+   group, escalates to `SIGKILL` after 3 s, and waits for the process group to disappear with a 5 s
+   deadline. This does not depend on inherited stdio closing. No model-facing notices are sent
+   during shutdown. Windows gets plain `child.kill()` and is documented as best-effort.
 5. **Payload cannot break the envelope.** Every output line is prefixed with `| `, so nothing in
    the stream can close the block or forge a notice, and the header marks it untrusted data.
 6. **WebSocket SSRF closed by pinning.** Resolve once, validate every address, then connect through

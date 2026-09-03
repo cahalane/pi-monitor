@@ -20,11 +20,15 @@ test("splitLines carries a partial line across chunk boundaries", () => {
 	assert.equal(second.carry, "bar");
 });
 
-test("stripAnsi handles CSI termination, OSC BEL/ST, ordinary ESC, and unsafe controls", () => {
+test("stripAnsi handles CSI, terminal strings, ordinary ESC, and unsafe controls", () => {
 	assert.equal(stripAnsi("red\u001b[31;1m text\u001b[0m"), "red text");
 	assert.equal(stripAnsi("before\u001b]0;title\u0007after"), "beforeafter");
 	assert.equal(stripAnsi("before\u001b]0;title\u001b\\after"), "beforeafter");
-	assert.equal(stripAnsi("a\u001bXb\u001bc\u0000\u000bd\tend"), "abd\tend");
+	assert.equal(stripAnsi("before\u001bPpayload\u001b\\after"), "beforeafter");
+	assert.equal(stripAnsi("before\u001b_payload\u001b\\after"), "beforeafter");
+	assert.equal(stripAnsi("before\u009b31mafter\u009b0m"), "beforeafter");
+	assert.equal(stripAnsi("before\u009dtitle\u009cafter"), "beforeafter");
+	assert.equal(stripAnsi("a\u001b7b\u001b8c\u0000\u000bd\tend"), "abcd\tend");
 });
 
 test("splitLines normalises \\r\\n and lone \\r to \\n", () => {
@@ -48,6 +52,10 @@ test("clampLine falls back to the default max when unspecified", () => {
 	const line = "z".repeat(DEFAULT_MAX_LINE_CHARS + 3);
 	const clamped = clampLine(line);
 	assert.match(clamped, /^\[3 chars elided\] /);
+});
+
+test("clampLine counts Unicode code points without splitting surrogate pairs", () => {
+	assert.equal(clampLine("a😀b", 2), "[1 chars elided] 😀b");
 });
 
 test("LineFilter matches coloured text, trims trailing whitespace, drops ANSI-only lines, and resets rejected state", () => {
@@ -89,7 +97,7 @@ test("compilePattern rejects common ReDoS shapes with a field-specific actionabl
 	for (const pattern of ["(a+)+$", "(?:a*)*", "(a|aa)+$", "(foo|foobar)+"]) {
 		assert.throws(() => compilePattern(pattern, "until"), /until pattern.*catastrophic.*simplify or bound/);
 	}
-	for (const pattern of ["^foo(?:bar|baz)+$", "a+", "(foo|bar)+$"]) {
+	for (const pattern of ["^foo(?:bar|baz)+$", "a+", "(foo|bar)+$", "(?:[0-9]{2}){2}", "(?:[0-9]{2})+", "(foo|foobar){2}"]) {
 		assert.doesNotThrow(() => compilePattern(pattern, "match"));
 	}
 });

@@ -244,6 +244,7 @@ extension-level confirmation step in front of it.
 
 ```
 npm test
+npm run test:integration
 ```
 
 Unit coverage exercises line filtering, batching, WebSocket address validation, event and notice

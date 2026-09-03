@@ -46,17 +46,23 @@ test("CommandSource streams stdout/stderr and flushes an unterminated trailing l
 test("PollSource emits initial output, suppresses unchanged output, marks changes, and ignores ANSI churn", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-monitor-poll-"));
 	const state = join(directory, "state");
+	const counter = join(directory, "counter");
 	await writeFile(state, "same\n\nline");
+	await writeFile(counter, "0");
 	const lines: string[] = [];
 	const source = new PollSource(
-		config("poll", `printf '\\033[3%sm%s\\033[0m\\n' "$(( $(date +%s) % 2 + 1 ))" "$(cat ${state})"`),
+		config(
+			"poll",
+			`count=$(( $(cat ${counter}) + 1 )); printf '%s' "$count" > ${counter}; printf '\\033[3%sm%s\\033[0m\\n' "$(( count % 2 + 1 ))" "$(cat ${state})"`,
+		),
 		{ onLine: (line) => lines.push(line), onEnd: () => {} },
 	);
 	try {
 		await source.start();
 		await waitFor(() => lines.includes("same") && lines.includes("line"));
 		const initialCount = lines.length;
-		await new Promise((resolve) => setTimeout(resolve, 1_150));
+		await waitFor(() => Number(readFileSync(counter, "utf8")) >= 2);
+		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.equal(lines.length, initialCount);
 
 		// Interior blank lines are output, not decoration, so removing one is a change.
@@ -84,13 +90,36 @@ test("CommandSource terminates a POSIX process group including a pipeline descen
 		await source.start();
 		await waitFor(() => {
 			try {
-				return Number((readFileSync(pidFile, "utf8") as string).trim()) > 0;
+				return Number(readFileSync(pidFile, "utf8").trim()) > 0;
 			} catch {
 				return false;
 			}
 		});
 		const pid = Number((await readFile(pidFile, "utf8")).trim());
 		assert.ok(pid > 0);
+		await source.stop();
+		assert.throws(() => process.kill(pid, 0), /ESRCH|ENOENT/);
+	} finally {
+		await source.stop();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("CommandSource escalates when a process-group descendant ignores SIGTERM", { skip: process.platform === "win32", timeout: 10_000 }, async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-monitor-kill-resistant-"));
+	const pidFile = join(directory, "pid");
+	const command = `(trap '' TERM; while :; do sleep 30; done) & echo $! > ${pidFile}; wait`;
+	const source = new CommandSource(config("command", command), { onLine: () => {}, onEnd: () => {} });
+	try {
+		await source.start();
+		await waitFor(() => {
+			try {
+				return Number(readFileSync(pidFile, "utf8").trim()) > 0;
+			} catch {
+				return false;
+			}
+		});
+		const pid = Number((await readFile(pidFile, "utf8")).trim());
 		await source.stop();
 		assert.throws(() => process.kill(pid, 0), /ESRCH|ENOENT/);
 	} finally {

@@ -38,37 +38,40 @@ function spawnShell(command: string, cwd: string | undefined): ChildProcess {
 
 /** Kills a process group where the platform supports it, then escalates once. */
 async function terminate(child: ChildProcess, graceMs: number, deadlineMs: number): Promise<void> {
-	if (child.exitCode !== null || child.signalCode !== null) return;
 	const pid = child.pid;
+	const processGroupId = process.platform !== "win32" && pid !== undefined ? -pid : undefined;
+	const isRunning = (): boolean => {
+		if (processGroupId === undefined) return child.exitCode === null && child.signalCode === null;
+		try {
+			process.kill(processGroupId, 0);
+			return true;
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code !== "ESRCH";
+		}
+	};
+	if (!isRunning()) return;
+
 	const signalTarget = (signal: NodeJS.Signals): void => {
 		try {
-			if (process.platform !== "win32" && pid !== undefined) process.kill(-pid, signal);
+			if (processGroupId !== undefined) process.kill(processGroupId, signal);
 			else child.kill(signal);
 		} catch {
 			// Already gone, or the group vanished between checks.
 		}
 	};
 
-	const exited = new Promise<void>((resolve) => {
-		if (child.exitCode !== null || child.signalCode !== null) {
-			resolve();
-			return;
-		}
-		// `close` can wait on inherited stdio held by a descendant. The process-group signal above
-		// already targets those descendants, so the shell's exit is enough to complete stop().
-		child.once("exit", () => resolve());
-	});
-
 	signalTarget("SIGTERM");
-	const escalation = setTimeout(() => signalTarget("SIGKILL"), graceMs);
-	escalation.unref();
-	let deadlineHandle!: NodeJS.Timeout;
-	const deadline = new Promise<void>((resolve) => {
-		deadlineHandle = setTimeout(resolve, deadlineMs);
-	});
-	await Promise.race([exited, deadline]);
-	clearTimeout(escalation);
-	clearTimeout(deadlineHandle);
+	const startedAt = Date.now();
+	let escalated = false;
+	while (isRunning()) {
+		const elapsed = Date.now() - startedAt;
+		if (!escalated && elapsed >= graceMs) {
+			signalTarget("SIGKILL");
+			escalated = true;
+		}
+		if (elapsed >= deadlineMs) break;
+		await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadlineMs - elapsed)));
+	}
 }
 
 export class CommandSource implements Source {
