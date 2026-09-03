@@ -1,7 +1,10 @@
 {
   "name": "@cahalane/pi-monitor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
   "description": "Monitor tool for pi: stream background command, poll and WebSocket output into the live session.",
   "keywords": ["pi-package", "pi-extension"],
   "license": "ISC",
@@ -34,7 +37,10 @@
     "extensions": ["./index.ts"]
   },
   "scripts": {
-    "test": "node --test --experimental-strip-types tests/*.test.ts"
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test:integration": "node --test --experimental-strip-types tests/integration/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "pack:verify": "node .github/scripts/verify-pack.cjs"
   },
   "dependencies": {
     "undici": "^8.10.0"
@@ -43,5 +49,9 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3"
   }
 }

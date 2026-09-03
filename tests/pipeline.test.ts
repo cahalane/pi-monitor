@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildBatch, clampLine, DEFAULT_MAX_LINE_CHARS, LineFilter, splitLines } from "../pipeline.ts";
+import {
+	buildBatch,
+	clampLine,
+	compilePattern,
+	DEFAULT_MAX_LINE_CHARS,
+	LineFilter,
+	splitLines,
+	stripAnsi,
+} from "../pipeline.ts";
 
 test("splitLines carries a partial line across chunk boundaries", () => {
 	const first = splitLines("", "hello wor");
@@ -10,6 +18,17 @@ test("splitLines carries a partial line across chunk boundaries", () => {
 	const second = splitLines(first.carry, "ld\nfoo\nbar");
 	assert.deepEqual(second.lines, ["hello world", "foo"]);
 	assert.equal(second.carry, "bar");
+});
+
+test("stripAnsi handles CSI, terminal strings, ordinary ESC, and unsafe controls", () => {
+	assert.equal(stripAnsi("red\u001b[31;1m text\u001b[0m"), "red text");
+	assert.equal(stripAnsi("before\u001b]0;title\u0007after"), "beforeafter");
+	assert.equal(stripAnsi("before\u001b]0;title\u001b\\after"), "beforeafter");
+	assert.equal(stripAnsi("before\u001bPpayload\u001b\\after"), "beforeafter");
+	assert.equal(stripAnsi("before\u001b_payload\u001b\\after"), "beforeafter");
+	assert.equal(stripAnsi("before\u009b31mafter\u009b0m"), "beforeafter");
+	assert.equal(stripAnsi("before\u009dtitle\u009cafter"), "beforeafter");
+	assert.equal(stripAnsi("a\u001b7b\u001b8c\u0000\u000bd\tend"), "abcd\tend");
 });
 
 test("splitLines normalises \\r\\n and lone \\r to \\n", () => {
@@ -35,6 +54,23 @@ test("clampLine falls back to the default max when unspecified", () => {
 	assert.match(clamped, /^\[3 chars elided\] /);
 });
 
+test("clampLine counts Unicode code points without splitting surrogate pairs", () => {
+	assert.equal(clampLine("a😀b", 2), "[1 chars elided] 😀b");
+});
+
+test("LineFilter matches coloured text, trims trailing whitespace, drops ANSI-only lines, and resets rejected state", () => {
+	const filter = new LineFilter({ match: /done/, maxLineChars: 8 });
+	assert.equal(filter.accept("\u001b[32mdone\u001b[0m   "), "done");
+	assert.equal(filter.accept("\u001b[31m\u001b[0m"), undefined);
+	assert.equal(filter.test(/done/), false);
+});
+
+test("LineFilter bounds regex input but keeps an honest display marker", () => {
+	const filter = new LineFilter({ match: /tail$/, maxLineChars: 8 });
+	const output = filter.accept(`${"x".repeat(2048)}tail`);
+	assert.equal(output, `[2044 chars elided] ${"x".repeat(4)}tail`);
+});
+
 test("LineFilter applies ignore after match, even when both match", () => {
 	const filter = new LineFilter({ match: /foo/, ignore: /bar/ });
 	assert.equal(filter.accept("foo baz"), "foo baz");
@@ -55,6 +91,22 @@ test("LineFilter drops blank lines", () => {
 	assert.equal(filter.accept("   "), undefined);
 	assert.equal(filter.accept(""), undefined);
 	assert.equal(filter.accept("\t"), undefined);
+});
+
+test("compilePattern rejects common ReDoS shapes with a field-specific actionable error", () => {
+	for (const pattern of ["(a+)+$", "(?:a*)*", "(a|aa)+$", "(foo|foobar)+"]) {
+		assert.throws(() => compilePattern(pattern, "until"), /until pattern.*catastrophic.*simplify or bound/);
+	}
+	for (const pattern of ["^foo(?:bar|baz)+$", "a+", "(foo|bar)+$", "(?:[0-9]{2}){2}", "(?:[0-9]{2})+", "(foo|foobar){2}"]) {
+		assert.doesNotThrow(() => compilePattern(pattern, "match"));
+	}
+});
+
+test("global and sticky regex state is reset for every line", () => {
+	const filter = new LineFilter({ match: /ok/g, ignore: /no/y });
+	assert.equal(filter.accept("ok"), "ok");
+	assert.equal(filter.accept("ok"), "ok");
+	assert.equal(filter.accept("no ok"), undefined);
 });
 
 test("buildBatch keeps everything under both limits", () => {

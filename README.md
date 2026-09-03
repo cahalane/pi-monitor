@@ -1,8 +1,9 @@
 # pi-monitor
 
-A [pi](https://pi.dev) extension that lets the model watch something in the background and have new
-output delivered into the running session, instead of re-running a status command in a loop. It
-ports the Monitor tool concept from Claude Code to pi.
+A [pi](https://pi.dev) extension for event-stream and change monitoring. The model calls
+`monitor` once; streamed command events, change-only polling for CI and deploy status, WebSocket
+feeds, and bounded wake-ups deliver relevant changes into the running session. It does
+not need to rerun a status command in a loop.
 
 ## Attribution
 
@@ -12,8 +13,7 @@ This project is original work by Colm Cahalane. Its delivery-scheduler design wa
 package; the upstream notice is preserved in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 The model calls `monitor` once. Each batch of new output then arrives on its own as a separate
-message, and the model can start a turn to react to it. Nobody tails a log file or reruns
-`gh pr checks` every thirty seconds to find out whether anything moved.
+message, and the model can start a turn to react to it.
 
 ## Example
 
@@ -41,11 +41,13 @@ monitor { name: "ci", poll: { command: "gh pr checks 4821", intervalMs: 30000 },
 
 ## When to use it
 
-Reach for `monitor` instead of `bg_run` + `bg_logs` when the model would otherwise poll: tailing a
-build log, watching a long-running command, or checking CI/PR/deploy status on a timer. `bg_run`
-still fits one-shot background commands whose completion the model finds out about once, through
-the normal terminal notification. `monitor` fits anything the model would otherwise check
-repeatedly.
+Use `monitor` for event-stream and change monitoring: tailing a build log, watching a long-running
+command, checking CI/PR/deploy status on a timer, or consuming a WebSocket feed. It is a good fit
+when the model would otherwise poll. `poll` reruns the command but emits only changed output, and
+scheduler limits keep automatic wake-ups bounded and controlled.
+
+This is not the best tool for a one-shot noisy command where only the terminal result matters.
+Use `bg_run` for that case; its normal terminal notification reports completion.
 
 Three sources:
 
@@ -113,8 +115,12 @@ source, and the caps in effect. Exactly one of `command`, `poll`, `ws` is requir
 | `deliverAs` | `steer` \| `followUp` \| `nextTurn` | `steer` | Escape hatch for a monitor whose output should not interrupt the current line of work. |
 
 Command monitors run under `/bin/sh -c` (or `cmd.exe /c` on Windows) in their own process group.
-Poll monitors run the same way, once per interval, hashing the trimmed, newline-normalised output
-to detect change.
+
+Filtering happens after ANSI and other terminal control sequences are stripped. The `match`,
+`ignore`, `until`, and `dedupe` checks see the bounded line (the maximum is 2000 characters by
+default). Patterns that match common catastrophic-backtracking shapes are rejected heuristically;
+this is not a guarantee that a regular expression is safe. Poll monitors run the same way, once
+per interval, and hash trimmed, newline-normalised, ANSI-free canonical output to detect change.
 
 ### `monitor_list`
 
@@ -209,8 +215,10 @@ A monitor that hits `maxEvents` or its byte cap does not just stop quietly: it s
 ## Security
 
 Every event and terminal notice tells the model the payload is untrusted output and not to follow
-instructions found in it. Each line is also prefixed with `| ` in the rendered payload, so nothing
-in a watched stream can forge a header or close the block early.
+instructions found in it. There is no guarantee that secrets are redacted. ANSI and control
+sequence stripping removes terminal decoration before filtering and hashing; it does not sanitise
+instructions or secrets. Each line is also prefixed with `| ` in the rendered payload, so nothing in
+a watched stream can forge a header or close the block early.
 
 WebSocket monitors are the SSRF-sensitive path. `ws://`/`wss://` targets are validated (scheme,
 ASCII only, no embedded credentials, valid subprotocol tokens), the hostname is resolved once, and
@@ -236,13 +244,14 @@ extension-level confirmation step in front of it.
 
 ```
 npm test
+npm run test:integration
 ```
 
-43 tests over line filtering and batching, WebSocket address validation, event and notice
-rendering, and the delivery scheduler. They run in about 0.15 s and spawn no process and open no
-socket: the scheduler tests drive a fake clock and a fake source through the registry's injectable
-hooks.
+Unit coverage exercises line filtering, batching, WebSocket address validation, event and notice
+rendering, and the delivery scheduler with fake clocks and sources, without external I/O.
+Integration tests spawn local processes and open loopback sockets to exercise the real source
+behaviour without external network access.
 
-Four of the bugs these tests and the live smoke runs caught are recorded in
-[`docs/design.md`](docs/design.md), along with why the scheduler defers a flush rather than sending
-output nothing is scheduled to read.
+Bugs caught by these tests and live smoke runs are recorded in [`docs/design.md`](docs/design.md),
+along with why the scheduler defers a flush rather than sending output nothing is scheduled to
+read.

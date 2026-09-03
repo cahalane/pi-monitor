@@ -186,7 +186,7 @@ export class MonitorRegistry {
 
 		this.enforcePendingBudget();
 
-		if (runtime.config.until?.test(line)) {
+		if (runtime.config.until && runtime.filter.test(runtime.config.until)) {
 			runtime.pendingEnd = { kind: "until", pattern: runtime.config.until.source };
 			this.flush(runtime);
 			return;
@@ -422,14 +422,16 @@ export class MonitorRegistry {
 		const tailFromSeq = runtime.bufferFromSeq;
 		const tailToSeq = runtime.seq;
 		const taken = runtime.buffer.length > 0 ? this.takeBatch(runtime) : undefined;
-		const tail = taken ? { ...taken, fromSeq: tailFromSeq, toSeq: tailToSeq } : undefined;
+		const tail = taken
+			? { text: taken.text, lines: taken.included, dropped: taken.dropped, fromSeq: tailFromSeq, toSeq: tailToSeq }
+			: undefined;
 		const shouldNotify =
 			options.notify && !this.shuttingDown && runtime.generation === this.generation;
 		if (shouldNotify) {
 			const content = renderEnded({
 				config: runtime.config,
 				reason,
-				events: runtime.events + (tail?.included ?? 0),
+				events: runtime.events + (tail?.lines ?? 0),
 				bytes: runtime.bytes,
 				uptimeMs: (runtime.endedAt ?? 0) - runtime.startedAt,
 				tail,

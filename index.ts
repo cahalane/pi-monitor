@@ -159,7 +159,7 @@ export default function monitorExtension(pi: ExtensionAPI): void {
 		let kind: SourceKind = "command";
 		let resolvedCommand = command;
 		let wsTarget: MonitorConfig["ws"];
-		let intervalMs = DEFAULTS.intervalMs;
+		let intervalMs: number = DEFAULTS.intervalMs;
 
 		if (poll !== undefined) {
 			kind = "poll";
@@ -295,7 +295,7 @@ export default function monitorExtension(pi: ExtensionAPI): void {
 			const snapshot = await registry.stop(id, "tool");
 			return {
 				content: [{ type: "text", text: `Stopped ${snapshot.id} "${snapshot.name}".\n${renderList([snapshot])}` }],
-				details: { snapshot },
+				details: { stopped: [snapshot] },
 			};
 		},
 	});
